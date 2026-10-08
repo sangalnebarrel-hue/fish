@@ -1,0 +1,36 @@
+{
+	"name": "catch-and-steal-a-fish",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"Shared": {
+				"$path": "src/shared"
+			}
+		},
+		"ServerScriptService": {
+			"Server": {
+				"$path": "src/server"
+			}
+		},
+		"StarterPlayer": {
+			"$properties": {
+				"CharacterWalkSpeed": 16
+			},
+			"StarterPlayerScripts": {
+				"Client": {
+					"$path": "src/client"
+				}
+			}
+		},
+		"Workspace": {
+			"$properties": {
+				"StreamingEnabled": false
+			}
+		},
+		"Players": {
+			"$properties": {
+				"CharacterAutoLoads": true
+			}
+		}
+	}
+}

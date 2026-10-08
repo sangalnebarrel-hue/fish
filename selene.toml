@@ -1,0 +1,5 @@
+std = "roblox"
+
+[lints]
+# ProfileStore вендорится как есть, его стиль не правим.
+shadowing = "allow"
