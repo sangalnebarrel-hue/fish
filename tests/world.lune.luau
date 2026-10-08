@@ -11,189 +11,28 @@
 ]]
 
 local fs = require("@lune/fs")
-local luau = require("@lune/luau")
 local process = require("@lune/process")
 local roblox = require("@lune/roblox")
 local serde = require("@lune/serde")
-local task = require("@lune/task")
 
-local Instance = roblox.Instance
+local Runtime = require("./lune/runtime")
+
 local Vector3 = roblox.Vector3
 local CFrame = roblox.CFrame
 
 local placePath = process.args[1] or "build/game.rbxl"
 local dumpPath = process.args[2]
-local game = roblox.deserializePlace(fs.readFile(placePath))
-
--- Заглушки движка ---------------------------------------------------------------------
-
-roblox.implementMethod("Instance", "WaitForChild", function(self, name)
-	local child = self:FindFirstChild(name)
-	assert(child, `WaitForChild would hang: {self:GetFullName()}.{name}`)
-	return child
-end)
-
--- У Lune есть встроенный Instance:AddTag, и он перекрывает CollectionService:AddTag(instance, tag),
--- поэтому сервис тегов подменяем обычной таблицей.
-local CollectionServiceProxy = {
-	AddTag = function(_, instance, tag)
-		instance:AddTag(tag)
-	end,
-	HasTag = function(_, instance, tag)
-		return instance:HasTag(tag)
-	end,
-	GetTagged = function(_, tag)
-		local result = {}
-		for _, descendant in game:GetDescendants() do
-			if descendant:HasTag(tag) then
-				table.insert(result, descendant)
-			end
-		end
-		return result
-	end,
-}
-local gameProxy = setmetatable({
-	GetService = function(_, name)
-		if name == "CollectionService" then
-			return CollectionServiceProxy
-		end
-		return game:GetService(name)
-	end,
-}, {
-	__index = function(_, key)
-		return game[key]
-	end,
-})
-
--- Важно: в Lune BasePart.Position не связан с CFrame, поэтому код, который проверяется здесь,
--- читает положение через CFrame.Position (в Roblox это одно и то же).
-
-local collisionGroups = {}
-roblox.implementMethod("PhysicsService", "IsCollisionGroupRegistered", function(_, name)
-	return collisionGroups[name] == true
-end)
-roblox.implementMethod("PhysicsService", "RegisterCollisionGroup", function(_, name)
-	assert(not collisionGroups[name], `collision group {name} registered twice`)
-	collisionGroups[name] = true
-end)
-roblox.implementMethod("PhysicsService", "CollisionGroupSetCollidable", function(_, a, b)
-	assert(collisionGroups[a] and collisionGroups[b], "collision group must be registered first")
-end)
-
-local terrainFills = {}
-roblox.implementMethod("Terrain", "FillBlock", function(_, cf, size, material)
-	table.insert(terrainFills, { cf = cf, size = size, material = material })
-end)
-
-roblox.implementMethod("RunService", "IsServer", function()
-	return true
-end)
-roblox.implementMethod("RunService", "IsStudio", function()
-	return true
-end)
-
-local function modelParts(model)
-	local parts = {}
-	for _, descendant in model:GetDescendants() do
-		if descendant:IsA("BasePart") then
-			table.insert(parts, descendant)
-		end
-	end
-	return parts
-end
-
-roblox.implementMethod("Model", "PivotTo", function(self, target)
-	local primary = self.PrimaryPart
-	assert(primary, `PivotTo on {self:GetFullName()} without PrimaryPart`)
-	local delta = target * primary.CFrame:Inverse()
-	for _, part in modelParts(self) do
-		part.CFrame = delta * part.CFrame
-	end
-end)
-
-roblox.implementMethod("Model", "GetExtentsSize", function(self)
-	local min = Vector3.new(math.huge, math.huge, math.huge)
-	local max = -min
-	for _, part in modelParts(self) do
-		local half = part.Size / 2
-		for _, sx in { -1, 1 } do
-			for _, sy in { -1, 1 } do
-				for _, sz in { -1, 1 } do
-					local corner = part.CFrame * Vector3.new(half.X * sx, half.Y * sy, half.Z * sz)
-					min = min:Min(corner)
-					max = max:Max(corner)
-				end
-			end
-		end
-	end
-	return max - min
-end)
-
--- В Lune 0.10 CFrame.lookAt отражает ось Z. Подменяем на эталонную формулу Roblox.
-local function lookAt(at, target, up)
-	local look = (target - at).Unit
-	local right = look:Cross(up or Vector3.new(0, 1, 0)).Unit
-	local trueUp = right:Cross(look)
-	return CFrame.fromMatrix(at, right, trueUp, -look)
-end
-local CFrameProxy = setmetatable({ lookAt = lookAt }, { __index = CFrame })
-
--- Загрузчик ModuleScript ------------------------------------------------------------------
-
-local cache = {}
-local function requireModule(moduleScript)
-	if cache[moduleScript] ~= nil then
-		return cache[moduleScript]
-	end
-	assert(moduleScript:IsA("ModuleScript"), `require of non-module {moduleScript:GetFullName()}`)
-	local env = {
-		script = moduleScript,
-		game = gameProxy,
-		workspace = game:GetService("Workspace"),
-		require = requireModule,
-		task = task,
-		warn = function(...)
-			print("[warn]", ...)
-		end,
-		Instance = Instance,
-		Vector3 = Vector3,
-		Vector2 = roblox.Vector2,
-		CFrame = CFrameProxy,
-		Color3 = roblox.Color3,
-		UDim = roblox.UDim,
-		UDim2 = roblox.UDim2,
-		Enum = roblox.Enum,
-		NumberRange = roblox.NumberRange,
-		NumberSequence = roblox.NumberSequence,
-		ColorSequence = roblox.ColorSequence,
-	}
-	local chunk = luau.load(moduleScript.Source, { debugName = moduleScript:GetFullName(), environment = env })
-	local result = chunk()
-	cache[moduleScript] = result
-	return result
-end
+local rt = Runtime.load(placePath)
+local game = rt.game
+local requireModule = rt.require
+local modelParts = rt.modelParts
+local terrainFills = rt.terrainFills
 
 local Shared = game:GetService("ReplicatedStorage"):FindFirstChild("Shared")
 local Services = game:GetService("ServerScriptService"):FindFirstChild("Server"):FindFirstChild("Services")
 
--- Мини-фреймворк проверок -------------------------------------------------------------------
-
-local passed, failed = 0, 0
-local function test(name, fn)
-	local ok, err = pcall(fn)
-	if ok then
-		passed += 1
-	else
-		failed += 1
-		print(`FAIL  {name}\n      {err}`)
-	end
-end
-
-local function expect(condition, message)
-	if not condition then
-		error(message or "expectation failed", 2)
-	end
-end
+local suite = Runtime.suite()
+local test, expect = suite.test, suite.expect
 
 local Config = requireModule(Shared.Config)
 local FishData = requireModule(Shared.FishData)
@@ -241,7 +80,7 @@ test("MapService.init отрабатывает без ошибок", function()
 end)
 
 if not mapOk then
-	print(`{passed} passed, {failed} failed`)
+	print(`{suite.passed} passed, {suite.failed} failed`)
 	process.exit(1)
 end
 
@@ -419,7 +258,9 @@ if dumpPath then
 	print(`map dumped: {#parts} parts -> {dumpPath}`)
 end
 
-print(`{passed} passed, {failed} failed`)
-if failed > 0 then
-	process.exit(1)
-end
+test("в рантайме не было ошибок и warn", function()
+	expect(#rt.failures == 0, table.concat(rt.failures, "\n"))
+end)
+
+print(`{suite.passed} passed, {suite.failed} failed`)
+process.exit(if suite.failed > 0 then 1 else 0)

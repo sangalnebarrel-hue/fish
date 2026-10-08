@@ -26,9 +26,12 @@ fi
 echo "== Юнит-тесты баланса"
 python3 tests/run.py "${LUAU:-luau}"
 
-echo "== Смоук-тест мира (Lune)"
+echo "== Смоук-тесты в Lune: мир, клиент (телефон и ПК), сервер"
 mkdir -p build
 rojo build default.project.json -o build/game.rbxl
 lune run tests/world.lune.luau build/game.rbxl
+lune run tests/client.lune.luau build/game.rbxl touch
+lune run tests/client.lune.luau build/game.rbxl desktop
+lune run tests/server.lune.luau build/game.rbxl
 
 echo "Все проверки пройдены"

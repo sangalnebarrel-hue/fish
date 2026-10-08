@@ -352,6 +352,29 @@ function BucketService.drop(player: Player): boolean
 	return true
 end
 
+-- Рыбу подобрали: прячем сразу, а саму модель удаляем в конце кадра — на её кнопку
+-- «Поднять» в этот момент ещё смотрят другие обработчики PromptTriggered.
+local function retireDropped(carry: Carry)
+	local model = carry.visual
+	carry.visual = nil
+	if carry.bar then
+		carry.bar:Destroy()
+		carry.bar = nil
+	end
+	if model then
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("ProximityPrompt") then
+				descendant.Enabled = false
+			elseif descendant:IsA("BasePart") then
+				descendant.Transparency = 1
+			end
+		end
+		task.defer(function()
+			model:Destroy()
+		end)
+	end
+end
+
 local function pickUp(player: Player, model: Model)
 	local carry = dropped[model]
 	local data = DataService.get(player)
@@ -371,7 +394,7 @@ local function pickUp(player: Player, model: Model)
 	-- Хозяин поднял свою украденную рыбу — она сразу дома
 	if carry.origin == "steal" and carry.owner == player then
 		dropped[model] = nil
-		destroyVisual(carry)
+		retireDropped(carry)
 		BaseService.clearTransit(carry.fish.Uid)
 		notify(player, `🏠 {FishData.fullName(carry.fish)} снова в твоём аквариуме!`, "good")
 		return
@@ -382,7 +405,7 @@ local function pickUp(player: Player, model: Model)
 		return
 	end
 	dropped[model] = nil
-	destroyVisual(carry)
+	retireDropped(carry)
 	if carry.origin == "steal" and carry.owner then
 		BaseService.setTransit(carry.fish.Uid, carry.owner, player)
 	end

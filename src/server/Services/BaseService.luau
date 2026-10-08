@@ -149,7 +149,7 @@ local function fishLabel(record: FishRecord, isSafe: boolean, inTransit: boolean
 	return billboard
 end
 
-function BaseService.render(player: Player)
+local function renderNow(player: Player)
 	local plot = plotOf[player]
 	local data = DataService.get(player)
 	if not plot or not data then
@@ -197,6 +197,23 @@ function BaseService.render(player: Player)
 		end
 		model.Parent = plot.FishFolder
 	end
+end
+
+local renderPending: { [Player]: boolean } = {}
+
+-- Перерисовать аквариум. Несколько изменений за кадр (кража, перенос рыбы между игроками)
+-- склеиваются в одну перерисовку в конце кадра.
+function BaseService.render(player: Player)
+	if renderPending[player] then
+		return
+	end
+	renderPending[player] = true
+	task.defer(function()
+		renderPending[player] = nil
+		if player.Parent == Players then
+			renderNow(player)
+		end
+	end)
 end
 
 -- Изменение аквариума -----------------------------------------------------------
